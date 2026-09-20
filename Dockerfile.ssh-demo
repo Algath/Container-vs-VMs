@@ -1,0 +1,18 @@
+# SSH-enabled counterpart of the alpine-demo VM, for comparison purposes only.
+# Not how you'd normally access a container (see README) — built specifically
+# to demonstrate the contrast between VM SSH access and container SSH access.
+
+FROM python:3.14-alpine
+
+RUN apk add --no-cache openssh \
+    && adduser -D demo \
+    && echo "demo:demo" | chpasswd \
+    && ssh-keygen -A \
+    && mkdir -p /home/demo/.ssh \
+    && chown demo:demo /home/demo/.ssh \
+    && chmod 700 /home/demo/.ssh \
+    && sed -i 's/^#PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+
+EXPOSE 22
+
+CMD ["/usr/sbin/sshd", "-D"]
