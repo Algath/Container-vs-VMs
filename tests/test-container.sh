@@ -57,7 +57,10 @@ done
 
 # Generate a throwaway key and install it directly (standing in for the
 # interactive ssh-copy-id step from the README, which needs a password prompt
-# that CI can't answer)
+# that CI can't answer). Clear out any leftover key from a previous local run
+# first — otherwise ssh-keygen prompts to overwrite, which would hang non-
+# interactively in CI instead of just failing.
+rm -f /tmp/ci_key /tmp/ci_key.pub
 ssh-keygen -t ed25519 -N "" -f /tmp/ci_key -q
 docker exec ssh-demo-ci mkdir -p /home/demo/.ssh
 docker cp /tmp/ci_key.pub ssh-demo-ci:/home/demo/.ssh/authorized_keys
