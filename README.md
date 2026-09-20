@@ -50,31 +50,55 @@ apk add python3 openssh
 service sshd start   # usually already enabled by setup-alpine
 ```
 
-### Passwordless SSH access
+## SSH access to the VM: a dedicated user, password first, then a key
 
-Temporarily allow password auth long enough to install the key (Alpine blocks password auth for root by default):
+Root is never used for SSH here. Logging in as root over the network is a needless privilege escalation risk — anyone who guesses or leaks that one credential gets full control of the machine immediately, with no separation between "the account you log in as" and "the account that can do anything." A normal, unprivileged user is the right default for SSH access, exactly like on a real server.
 
-```bash
-# On the VM
-sed -i 's/^PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
-service sshd restart
-mkdir -p /root/.ssh && chmod 700 /root/.ssh
+1. **Create the user, on the VM (console), while it's still fresh from setup-alpine:**
+
+```Shell
+adduser demo
 ```
 
-```bash
-# From the host
-ssh-copy-id root@<VM_IP>
-```
+2. **Get the VM's IP** (from the host)
 
-Get the VM's IP with:
-
-```bash
+```Shell
 virsh --connect qemu:///system domifaddr alpine-demo
 ```
 
-**Important note**: on this setup, `virsh` without `--connect qemu:///system` defaults to `qemu:///session`, where the domain doesn't exist — always specify the connection explicitly (the script does this automatically).
+**Important note** : on this setup, `virsh` without `--connect qemu:///system` defaults to `qemu:///session`, where the domain doesn't exist — always specify the connection explicitly (the script does this automatically).
 
-## Usage
+3. **First connection, by password**
+
+```Shell
+ssh demo@<VM_IP>
+```
+
+4. **Generate a key pair for this user** (on the host, skip if you already have one):
+
+```Shell
+ssh-keygen -t ed25519 -f ~/.ssh/vm_demo_key
+```
+
+5. **Install the public key for** `demo`, switch to key-based auth.
+
+This copies the host's public SSH key into `authorized_keys` on the VM, for that one user — it will ask for the `demo` password one last time, to authorize the installation:
+
+```Shell
+ssh-copy-id -i ~/.ssh/vm_demo_key.pub demo@<VM_IP>
+```
+
+6. **No password log in**
+
+```Shell
+ssh -i ~/.ssh/vm_demo_key demo@<VM_IP>
+```
+
+Because this is a custom-named key, SSH won't find it automatically: `-i` tells it exactly which private key to use for authentication. The VM's SSH server then sends a cryptographic challenge, and the client uses that private key to prove it matches the public key already stored, without the private key itself ever leaving the host.
+
+That sequence, password login working like on any box, then swapping to a key, is the point: the key isn't there to remove a "clerical" step, it's there because password auth over the network is brute-forceable and a key isn't. Root SSH stays disabled throughout (Alpine's default `PermitRootLogin prohibit-password` is left untouched); the demo's Python job also runs as `demo`, not root, for the same least-privilege reason.
+
+### Usage
 
 ```bash
 virsh --connect qemu:///system start alpine-demo   # if not already running
@@ -92,6 +116,27 @@ The demo uses two different kinds of "package" for the two worlds, and they aren
   the process directly, sharing the host's kernel instead of booting one.
 
 That difference is part of why the two "cold start" numbers aren't symmetric: the container skips an install step and a kernel boot entirely, while the VM's ISO-based install (done once, ahead of the demo) is the one-time cost that a container's layered image never has to pay at all.
+
+## Continuous integration
+
+A workflow (`.github/workflows/ci.yml`) runs on every push and pull request:
+
+* **`lint`** : runs `shellcheck` on the bash scripts, catching quoting bugs, unset variables, and other shell pitfalls before they hit a live demo.
+* **`container-tests`** (`tests/test-container.sh`): builds both container images, checks that the job prints the expected output, that the image size metric can be read, and that the SSH-enabled container accepts a key-based login as the `demo` user, i.e. everything on the Docker side of the demo, end to end.
+
+Both `tests/test-container.sh` and `tests/test-vm.sh` source `demo-container-vs-vm.sh` and call its individual functions (`container_cold_start`, `vm_disk_footprint`, etc.) rather than re-typing the same `docker`/`ssh` commands in a separate file — they test the
+actual demo code, and can never silently drift out of sync with it. Running the script directly (`./demo-container-vs-vm.sh`) still runs the full container-then-VM sequence end to end; a guard at the bottom of the file (`if [[ "${BASH_SOURCE[0]}" == "${0}" ]]`) only skips that when the file is sourced instead of executed.
+
+ **A terminology note, since it's easy to conflate the two** : `runs-on: ubuntu-latest` in`ci.yml` means each job itself executes inside a GitHub-provided VM, that's what "runs-on" refers to, and it's unrelated to `alpine-demo`, the libvirt VM this project measures. A GitHub Actions runner has no network route to `alpine-demo` (it lives on this host's
+private `192.168.122.0/24` libvirt network) and starts from a clean disk on every run, so there's no way to reach or reconstruct it from a workflow step, regardless of what dependencies that step installs.
+
+**The VM side is deliberately not covered by CI.** It depends on a libvirt VM that was provisioned once, by hand, and keeps state across runs, an installed disk, a user account, a deployed SSH key. A GitHub Actions runner starts from a clean slate on every run, so testing the VM path automatically would mean re-running the ISO install, the `setup-alpine` prompts, and the SSH key setup from scratch each time, several minutes of work, on infrastructure (nested virtualization) that isn't guaranteed to behave the same way on every runner, just to check a path that isn't going to change between pushes. That trade-off, CI catches regressions in the parts that are actually code (scripts, Dockerfile, container behavior), while the VM setup stays a documented, manually-verified procedure, is intentional, not an oversight.
+
+That manual verification isn't just "trust me", `tests/test-vm.sh` runs the same checks as `tests/test-container.sh` (VM up, correct user, job output, root login refused, metrics readable), against the real VM, from the host that has it. It's not wired into the workflow since a GitHub-hosted runner has no route to a VM sitting on a private libvirt network, it's meant to be run locally before a live demo, with its output kept as evidence that the VM path was actually exercised, not just documented:
+
+```Shell
+./tests/test-vm.sh
+```
 
 ## Configuration
 

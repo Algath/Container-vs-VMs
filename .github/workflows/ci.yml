@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shellcheck the demo and test scripts
+        run: shellcheck -x demo-container-vs-vm.sh tests/test-container.sh tests/test-vm.sh
+
+  container-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run container-side tests
+        run: ./tests/test-container.sh
